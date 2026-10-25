@@ -1,0 +1,9 @@
+node_modules/
+.env
+dist/
+backend/uploads/profiles/*
+backend/uploads/posts/*
+!backend/uploads/profiles/.gitkeep
+!backend/uploads/posts/.gitkeep
+*.log
+.DS_Store

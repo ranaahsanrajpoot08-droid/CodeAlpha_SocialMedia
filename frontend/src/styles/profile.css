@@ -1,0 +1,26 @@
+.profile-header { display: flex; gap: 22px; align-items: flex-start; }
+.profile-info { flex: 1; min-width: 0; }
+.profile-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.profile-top h2 { margin: 0; }
+.bio { margin: 10px 0 14px; white-space: pre-wrap; word-break: break-word; }
+
+.stats { display: flex; gap: 8px; flex-wrap: wrap; }
+.stats button {
+  background: var(--bg); border: none; border-radius: 12px; padding: 8px 14px;
+  cursor: pointer; color: var(--muted); font-weight: 600;
+}
+.stats button strong { color: var(--text); margin-right: 4px; }
+.stats button.active { background: var(--primary-light); color: var(--primary); }
+.stats button.active strong { color: var(--primary); }
+
+@media (max-width: 520px) {
+  .profile-header { flex-direction: column; align-items: center; text-align: center; }
+  .profile-top { justify-content: center; }
+  .stats { justify-content: center; }
+}
+
+.form-card { display: flex; flex-direction: column; gap: 16px; }
+.form-card label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
+.form-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.avatar-edit { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.avatar-edit-buttons { display: flex; gap: 8px; flex-wrap: wrap; }

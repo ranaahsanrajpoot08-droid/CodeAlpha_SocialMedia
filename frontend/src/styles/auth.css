@@ -1,0 +1,11 @@
+.auth-page {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px;
+  background: linear-gradient(135deg, #ece9ff 0%, #f8f0ff 50%, #e6f0ff 100%);
+}
+.auth-card {
+  width: 100%; max-width: 420px; background: #fff; border-radius: 20px;
+  padding: 32px 28px; box-shadow: 0 10px 40px rgba(60, 40, 140, 0.15);
+  display: flex; flex-direction: column; gap: 14px;
+}
+.auth-card label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; font-size: 0.92rem; }
+.auth-card p { margin: 0; }
