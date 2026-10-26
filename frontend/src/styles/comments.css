@@ -1,0 +1,24 @@
+/* Comment replies and comment likes */
+.comment-thread { display: flex; flex-direction: column; gap: 8px; }
+.comment-main { flex: 1; min-width: 0; }
+.comment-actions { display: flex; gap: 12px; padding: 2px 6px 0; }
+.comment-actions .link-btn { color: var(--muted); font-size: 0.82rem; padding: 0; }
+.comment-actions .link-btn:hover { color: var(--primary); }
+.comment-actions .link-btn.liked { color: var(--danger); }
+.comment-actions .link-btn.danger { color: var(--danger); }
+
+.comment-replies {
+  margin-left: 42px; padding-left: 12px; border-left: 2px solid var(--border);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.comment.is-reply .comment-body { background: #f7f8fb; }
+
+.reply-note {
+  display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--muted);
+  background: var(--primary-light); border-radius: 10px; padding: 6px 12px;
+}
+.reply-note .link-btn { margin-left: auto; }
+
+@media (max-width: 520px) {
+  .comment-replies { margin-left: 22px; padding-left: 8px; }
+}

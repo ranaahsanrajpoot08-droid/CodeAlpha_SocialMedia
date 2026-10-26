@@ -1,10 +1,13 @@
 import { Link } from 'react-router-dom';
 import Avatar from './Avatar.jsx';
 import Loading from './Loading.jsx';
-import { formatChatTime } from '../utils/helpers.js';
+import { useSocket } from '../context/SocketContext.jsx';
+import { formatChatTime, messagePreview } from '../utils/helpers.js';
 
 // Left side of the Messages page: everyone I have chatted with, newest first.
-const ConversationList = ({ conversations, activeId, loading, error, onRetry, myId }) => (
+const ConversationList = ({ conversations, activeId, loading, error, onRetry, myId }) => {
+  const { onlineIds } = useSocket();
+  return (
   <aside className="conv-panel">
     <div className="conv-header">
       <h2>Messages</h2>
@@ -35,7 +38,7 @@ const ConversationList = ({ conversations, activeId, loading, error, onRetry, my
             to={`/messages/${c.user.id}`}
             className={`conv-item ${c.user.id === activeId ? 'active' : ''} ${c.unread_count > 0 ? 'unread' : ''}`}
           >
-            <Avatar user={c.user} size={48} />
+            <Avatar user={c.user} size={48} online={onlineIds.has(c.user.id)} />
             <div className="conv-text">
               <div className="conv-top">
                 <strong className="conv-name">@{c.user.username}</strong>
@@ -44,7 +47,7 @@ const ConversationList = ({ conversations, activeId, loading, error, onRetry, my
               <div className="conv-bottom">
                 <span className="conv-preview">
                   {mine && 'You: '}
-                  {c.last_message.message_text}
+                  {messagePreview(c.last_message)}
                 </span>
                 {c.unread_count > 0 && <span className="badge">{c.unread_count > 99 ? '99+' : c.unread_count}</span>}
               </div>
@@ -54,6 +57,7 @@ const ConversationList = ({ conversations, activeId, loading, error, onRetry, my
       })}
     </div>
   </aside>
-);
+  );
+};
 
 export default ConversationList;

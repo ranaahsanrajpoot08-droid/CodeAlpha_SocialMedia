@@ -17,6 +17,7 @@ import commentRoutes from './routes/commentRoutes.js';
 import likeRoutes from './routes/likeRoutes.js';
 import followRoutes from './routes/followRoutes.js';
 import messageRoutes from './routes/messageRoutes.js';
+import { serveMessageFile } from './controllers/messageController.js';
 import { initSocket } from './sockets/socketHandler.js';
 import { notFound, errorHandler } from './middleware/errorMiddleware.js';
 
@@ -51,7 +52,14 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Uploaded images are available at  http://localhost:5000/uploads/...
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Chat files are served by their own route (images open, other files download with their real name).
+app.get('/uploads/messages/:file', serveMessageFile);
+app.use(
+  '/uploads',
+  express.static(path.join(__dirname, 'uploads'), {
+    setHeaders: (res) => res.setHeader('X-Content-Type-Options', 'nosniff'),
+  })
+);
 
 // ---- Routes ----
 app.get('/api/health', (req, res) => res.json({ status: 'ok', message: 'SocialConnect API is running' }));

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import ConversationList from '../components/ConversationList.jsx';
 import ChatWindow from '../components/ChatWindow.jsx';
+import ForwardModal from '../components/ForwardModal.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useSocket } from '../context/SocketContext.jsx';
 import { useToast } from '../context/ToastContext.jsx';
@@ -10,6 +11,10 @@ import {
   fetchMessages,
   markMessagesRead,
   sendMessageRest,
+  deleteMessage,
+  reactToMessage,
+  forwardMessage,
+  clearChat,
   getErrorMessage,
 } from '../services/api.js';
 
@@ -29,11 +34,21 @@ const addMessage = (list, msg) => {
 
 const newClientId = (userId) => `${userId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
+// The small version of a message shown in the inbox list.
+const toLastMessage = (message) => ({
+  id: message.id,
+  sender_id: message.sender_id,
+  message_text: message.message_text,
+  is_deleted: Boolean(message.is_deleted),
+  attachment: message.attachment ? { name: message.attachment.name, is_image: message.attachment.is_image } : null,
+  created_at: message.created_at,
+});
+
 const Messages = () => {
   const { userId } = useParams();
   const navigate = useNavigate();
   const { user: me } = useAuth();
-  const { socket, connected, refreshUnread } = useSocket();
+  const { socket, connected, refreshUnread, onlineIds } = useSocket();
   const { showToast } = useToast();
 
   const activeId = userId && /^\d+$/.test(userId) ? Number(userId) : null;
@@ -52,6 +67,10 @@ const Messages = () => {
   const [threadLoading, setThreadLoading] = useState(false);
   const [threadError, setThreadError] = useState('');
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [forwarding, setForwarding] = useState(null);
+  const [partnerTyping, setPartnerTyping] = useState(false);
+  const typingTimeout = useRef(null);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -91,12 +110,7 @@ const Messages = () => {
       const updated = {
         ...existing,
         user: { ...existing.user, ...chatUser },
-        last_message: {
-          id: message.id,
-          sender_id: message.sender_id,
-          message_text: message.message_text,
-          created_at: message.created_at,
-        },
+        last_message: toLastMessage(message),
         unread_count: unreadDelta === 'reset' ? 0 : existing.unread_count + unreadDelta,
       };
       return [updated, ...prev.filter((c) => c.user.id !== chatUser.id)];
@@ -135,6 +149,9 @@ const Messages = () => {
     setMessages([]);
     setHasMore(false);
     setThreadError('');
+    setReplyingTo(null);
+    setForwarding(null);
+    setPartnerTyping(false);
     if (activeId && activeId !== me.id) loadThread(activeId);
   }, [activeId, me.id, loadThread]);
 
@@ -142,18 +159,20 @@ const Messages = () => {
   useEffect(() => {
     if (!socket) return undefined;
 
+    // A new message (mine from another tab, or from the other person, or a forward)
     const onNew = (message) => {
       const mine = message.sender_id === me.id;
       const partnerId = mine ? message.receiver_id : message.sender_id;
       const isActive = partnerId === activeId;
 
-      // 1) the open chat
       if (isActive) {
         setMessages((prev) => addMessage(prev, message));
-        if (!mine && !document.hidden) markActiveRead(partnerId);
+        if (!mine) {
+          setPartnerTyping(false);
+          if (!document.hidden) markActiveRead(partnerId);
+        }
       }
 
-      // 2) the inbox on the left
       const known = conversationsRef.current.find((c) => c.user.id === partnerId);
       if (known || (isActive && partner)) {
         const chatUser = known ? known.user : partner;
@@ -170,11 +189,50 @@ const Messages = () => {
       setMessages((prev) => prev.map((m) => (m.sender_id === me.id ? { ...m, is_read: true } : m)));
     };
 
+    // A message was unsent -> it becomes "This message was deleted" for both people
+    const onDeleted = ({ message }) => {
+      setMessages((prev) => prev.map((m) => (m.id === message.id ? message : m)));
+      setConversations((prev) =>
+        prev.map((c) => (c.last_message.id === message.id ? { ...c, last_message: toLastMessage(message) } : c))
+      );
+      if (message.receiver_id === me.id) loadConversations(); // unread number may have changed
+    };
+
+    const onReaction = ({ message_id: id, reactions }) => {
+      setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, reactions } : m)));
+    };
+
+    // "Delete for me" / "Clear chat" done in another tab of mine
+    const onHidden = ({ ids, chatUserId }) => {
+      if (ids) setMessages((prev) => prev.filter((m) => !ids.includes(m.id)));
+      if (chatUserId && chatUserId === activeId) {
+        setMessages([]);
+        setHasMore(false);
+      }
+      loadConversations();
+    };
+
+    const onTyping = ({ userId: fromId, typing }) => {
+      if (fromId !== activeId) return;
+      setPartnerTyping(typing);
+      clearTimeout(typingTimeout.current);
+      if (typing) typingTimeout.current = setTimeout(() => setPartnerTyping(false), 5000); // safety net
+    };
+
     socket.on('message:new', onNew);
     socket.on('message:read', onRead);
+    socket.on('message:deleted', onDeleted);
+    socket.on('message:reaction', onReaction);
+    socket.on('message:hidden', onHidden);
+    socket.on('typing', onTyping);
     return () => {
       socket.off('message:new', onNew);
       socket.off('message:read', onRead);
+      socket.off('message:deleted', onDeleted);
+      socket.off('message:reaction', onReaction);
+      socket.off('message:hidden', onHidden);
+      socket.off('typing', onTyping);
+      clearTimeout(typingTimeout.current);
     };
   }, [socket, me.id, activeId, partner, markActiveRead, upsertConversation, loadConversations]);
 
@@ -205,13 +263,23 @@ const Messages = () => {
   }, [activeId, me.id, markActiveRead]);
 
   // ---- Sending ----
-  // Uses the socket when connected. If the socket is down (or does not answer), the SAME
+  // Text goes through the socket when connected. If the socket is down (or does not answer), the SAME
   // clientId is sent through the REST API instead - the server ignores duplicates.
-  const deliver = async (receiverId, text, clientId) => {
+  // Photos/files always use the REST API (multipart upload).
+  const deliver = async ({ receiverId, text, clientId, replyToId, file }) => {
+    if (file) {
+      const body = new FormData();
+      body.append('text', text);
+      body.append('clientId', clientId);
+      if (replyToId) body.append('replyToId', replyToId);
+      body.append('attachment', file);
+      return (await sendMessageRest(receiverId, body)).message;
+    }
+
     if (socket?.connected) {
       try {
         const reply = await new Promise((resolve, reject) => {
-          socket.timeout(8000).emit('message:send', { receiverId, text, clientId }, (err, r) =>
+          socket.timeout(8000).emit('message:send', { receiverId, text, clientId, replyToId }, (err, r) =>
             err ? reject(err) : resolve(r)
           );
         });
@@ -224,18 +292,24 @@ const Messages = () => {
         // timeout / connection problem -> fall through to REST
       }
     }
-    const data = await sendMessageRest(receiverId, { text, clientId });
-    return data.message;
+    return (await sendMessageRest(receiverId, { text, clientId, replyToId })).message;
   };
 
-  const sendText = async (text, existingTemp) => {
+  // text + optional file from the input box, or a failed message to retry.
+  const send = async (text, file, retryOf) => {
     if (!partner) return;
     const receiverId = partner.id;
-    const clientId = existingTemp ? existingTemp.client_id : newClientId(me.id);
+    const clientId = retryOf ? retryOf.client_id : newClientId(me.id);
+    const replyTo = retryOf ? retryOf.reply_to : replyingTo;
+    const replyToId = retryOf ? retryOf.retry.replyToId : replyingTo?.id || null;
+    const payload = retryOf ? retryOf.retry : { text, file, replyToId };
 
-    if (existingTemp) {
+    let localUrl = null;
+    if (retryOf) {
       setMessages((prev) => prev.map((m) => (m.client_id === clientId ? { ...m, pending: true, failed: false } : m)));
     } else {
+      const isImage = Boolean(file && file.type.startsWith('image/'));
+      localUrl = isImage ? URL.createObjectURL(file) : null;
       const temp = {
         id: `temp-${clientId}`,
         client_id: clientId,
@@ -243,19 +317,90 @@ const Messages = () => {
         receiver_id: receiverId,
         message_text: text,
         is_read: false,
+        is_deleted: false,
+        is_forwarded: false,
         created_at: new Date().toISOString(),
         pending: true,
+        reactions: [],
+        reply_to: replyTo
+          ? {
+              id: replyTo.id,
+              sender_id: replyTo.sender_id,
+              message_text: replyTo.message_text,
+              is_deleted: false,
+              attachment: replyTo.attachment ? { name: replyTo.attachment.name, is_image: replyTo.attachment.is_image } : null,
+            }
+          : null,
+        attachment: file ? { name: file.name, type: file.type, size: file.size, is_image: isImage, local_url: localUrl } : null,
+        retry: payload, // kept so "Retry" can send exactly the same thing again
       };
       setMessages((prev) => [...prev, temp]);
+      setReplyingTo(null);
     }
 
     try {
-      const saved = await deliver(receiverId, text, clientId);
+      const saved = await deliver({ receiverId, text: payload.text, clientId, replyToId, file: payload.file });
       setMessages((prev) => addMessage(prev, saved));
       upsertConversation(partner, saved, 0);
+      if (localUrl) setTimeout(() => URL.revokeObjectURL(localUrl), 2000); // the real image is shown now
     } catch (error) {
       setMessages((prev) => prev.map((m) => (m.client_id === clientId ? { ...m, pending: false, failed: true } : m)));
       showToast(error.refused ? error.message : getErrorMessage(error), 'error');
+    }
+  };
+
+  // ---- Message actions ----
+  const discardFailed = (message) => setMessages((prev) => prev.filter((m) => m.client_id !== message.client_id));
+
+  const handleDelete = async (message, scope) => {
+    try {
+      const data = await deleteMessage(message.id, scope);
+      if (scope === 'everyone') {
+        setMessages((prev) => prev.map((m) => (m.id === message.id ? data.deleted : m)));
+        setConversations((prev) =>
+          prev.map((c) => (c.last_message.id === message.id ? { ...c, last_message: toLastMessage(data.deleted) } : c))
+        );
+        showToast('Message unsent');
+      } else {
+        setMessages((prev) => prev.filter((m) => m.id !== message.id));
+        loadConversations();
+        showToast('Message deleted for you');
+      }
+      if (replyingTo?.id === message.id) setReplyingTo(null);
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error');
+    }
+  };
+
+  const handleReact = async (message, emoji) => {
+    try {
+      const data = await reactToMessage(message.id, emoji);
+      setMessages((prev) => prev.map((m) => (m.id === message.id ? { ...m, reactions: data.reactions } : m)));
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error');
+    }
+  };
+
+  const handleForwardSubmit = async (userIds) => {
+    try {
+      await forwardMessage(forwarding.id, userIds);
+      showToast(`Forwarded to ${userIds.length} ${userIds.length === 1 ? 'person' : 'people'}`);
+      setForwarding(null);
+      loadConversations();
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error');
+    }
+  };
+
+  const handleClearChat = async () => {
+    try {
+      await clearChat(activeId);
+      setMessages([]);
+      setHasMore(false);
+      loadConversations();
+      showToast('Chat cleared');
+    } catch (error) {
+      showToast(getErrorMessage(error), 'error');
     }
   };
 
@@ -266,7 +411,9 @@ const Messages = () => {
     setLoadingOlder(true);
     try {
       const data = await fetchMessages(activeId, { before: oldest.id, limit: 30 });
-      setMessages((prev) => data.messages.reduceRight((list, m) => (list.some((x) => x.id === m.id) ? list : [m, ...list]), prev));
+      setMessages((prev) =>
+        data.messages.reduceRight((list, m) => (list.some((x) => x.id === m.id) ? list : [m, ...list]), prev)
+      );
       setHasMore(data.hasMore);
     } catch (error) {
       showToast(getErrorMessage(error), 'error');
@@ -302,9 +449,20 @@ const Messages = () => {
           hasMore={hasMore}
           loadingOlder={loadingOlder}
           connected={connected}
+          partnerOnline={onlineIds.has(activeId)}
+          partnerTyping={partnerTyping}
+          replyingTo={replyingTo}
+          onCancelReply={() => setReplyingTo(null)}
           onLoadOlder={handleLoadOlder}
-          onSend={(text) => sendText(text)}
-          onRetry={(msg) => sendText(msg.message_text, msg)}
+          onSend={(text, file) => send(text, file)}
+          onRetry={(msg) => send(null, null, msg)}
+          onDiscard={discardFailed}
+          onReply={setReplyingTo}
+          onForward={setForwarding}
+          onDelete={handleDelete}
+          onReact={handleReact}
+          onClearChat={handleClearChat}
+          onTyping={(typing) => socket?.emit('typing', { userId: activeId, typing })}
           onBack={() => navigate('/messages')}
         />
       ) : (
@@ -315,6 +473,15 @@ const Messages = () => {
             <p className="muted">Select a conversation on the left, or open a profile and press <b>Message</b>.</p>
           </div>
         </section>
+      )}
+
+      {forwarding && (
+        <ForwardModal
+          message={forwarding}
+          conversations={conversations}
+          onClose={() => setForwarding(null)}
+          onSubmit={handleForwardSubmit}
+        />
       )}
     </div>
   );

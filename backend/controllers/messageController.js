@@ -1,48 +1,34 @@
+import path from 'path';
+import { fileURLToPath } from 'url';
 import pool from '../config/db.js';
+import AppError from '../utils/AppError.js';
 import {
-  formatMessage,
   parseUserId,
   ensureUserExists,
-  saveMessage,
-  markConversationRead,
+  fetchThread,
+  fetchConversations,
   getUnreadTotal,
+  saveMessage,
+  forwardMessage as forwardMessageService,
+  markConversationRead,
+  deleteForMe,
+  unsendMessage,
+  clearChat as clearChatService,
+  setReaction,
   emitNewMessage,
   emitMessagesRead,
+  emitMessageDeleted,
+  emitReaction,
+  emitHidden,
 } from '../services/messageService.js';
-import AppError from '../utils/AppError.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const messageUploads = path.join(__dirname, '..', 'uploads', 'messages');
 
 // GET /api/messages/conversations
 // One row per person I have chatted with: last message + my unread count. Newest first.
 export const getConversations = async (req, res) => {
-  const me = req.user.id;
-
-  const [rows] = await pool.query(
-    `SELECT u.id, u.name, u.username, u.profile_image,
-            m.id AS last_id, m.sender_id AS last_sender_id, m.message_text AS last_text, m.created_at AS last_at,
-            (SELECT COUNT(*) FROM messages
-               WHERE sender_id = u.id AND receiver_id = ? AND is_read = FALSE) AS unread_count
-     FROM users u
-     JOIN messages m ON m.id = (
-       SELECT MAX(id) FROM messages
-       WHERE (sender_id = ? AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = ?)
-     )
-     WHERE u.id <> ?
-     ORDER BY m.id DESC`,
-    [me, me, me, me]
-  );
-
-  res.json({
-    conversations: rows.map((r) => ({
-      user: { id: r.id, name: r.name, username: r.username, profile_image: r.profile_image },
-      last_message: {
-        id: r.last_id,
-        sender_id: r.last_sender_id,
-        message_text: r.last_text,
-        created_at: r.last_at,
-      },
-      unread_count: Number(r.unread_count),
-    })),
-  });
+  res.json({ conversations: await fetchConversations(req.user.id) });
 };
 
 // GET /api/messages/unread-count
@@ -58,37 +44,72 @@ export const getMessages = async (req, res) => {
   if (otherId === me) throw new AppError('You cannot message yourself', 400);
 
   const partner = await ensureUserExists(otherId);
-
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 30, 1), 100);
-  const before = parseInt(req.query.before, 10);
+  const before = parseInt(req.query.before, 10) || 0;
 
-  const params = [me, otherId, otherId, me];
-  let beforeSql = '';
-  if (before > 0) {
-    beforeSql = 'AND id < ?';
-    params.push(before);
-  }
-
-  const [rows] = await pool.query(
-    `SELECT * FROM messages
-     WHERE ((sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?)) ${beforeSql}
-     ORDER BY id DESC
-     LIMIT ?`,
-    [...params, limit + 1]
-  );
-
-  const hasMore = rows.length > limit;
-  const messages = rows.slice(0, limit).reverse().map(formatMessage); // oldest -> newest
-
+  const { messages, hasMore } = await fetchThread(me, otherId, { before, limit });
   res.json({ user: partner, messages, hasMore });
 };
 
-// POST /api/messages/:userId   body: { text, clientId? }
-// Same as sending through the socket - useful as a fallback when the socket is disconnected.
+// POST /api/messages/:userId
+// JSON:       { text, clientId?, replyToId? }
+// multipart:  text, clientId, replyToId, attachment (a photo or file)
+// Text-only messages normally go through the socket; this route is the fallback AND the way to send files.
 export const sendMessage = async (req, res) => {
-  const { message, created } = await saveMessage(req.user.id, req.params.userId, req.body.text, req.body.clientId);
+  const { message, created } = await saveMessage(req.user.id, req.params.userId, {
+    text: req.body.text,
+    clientId: req.body.clientId,
+    replyToId: req.body.replyToId,
+    file: req.file,
+  });
   if (created) emitNewMessage(req.app.get('io'), message);
   res.status(created ? 201 : 200).json({ message });
+};
+
+// POST /api/messages/forward   body: { messageId, userIds: [1, 2] }
+export const forwardMessage = async (req, res) => {
+  const messages = await forwardMessageService(req.user.id, req.body.messageId, req.body.userIds);
+  const io = req.app.get('io');
+  messages.forEach((m) => emitNewMessage(io, m));
+  res.status(201).json({ messages });
+};
+
+// DELETE /api/messages/item/:messageId?scope=me|everyone
+//   me        -> hide it only for me
+//   everyone  -> unsend (only the sender can do this)
+export const deleteMessage = async (req, res) => {
+  const io = req.app.get('io');
+  const scope = req.query.scope;
+
+  if (scope === 'everyone') {
+    const message = await unsendMessage(req.user.id, req.params.messageId);
+    emitMessageDeleted(io, message);
+    return res.json({ message: 'Message unsent', scope, deleted: message });
+  }
+  if (scope === 'me') {
+    const row = await deleteForMe(req.user.id, req.params.messageId);
+    emitHidden(io, req.user.id, { ids: [row.id] });
+    return res.json({ message: 'Message deleted for you', scope, id: row.id });
+  }
+  throw new AppError('scope must be "me" or "everyone"', 400);
+};
+
+// PUT /api/messages/item/:messageId/reaction   body: { emoji }   (same emoji again = remove)
+export const reactToMessage = async (req, res) => {
+  const { row, reactions } = await setReaction(req.user.id, req.params.messageId, req.body.emoji);
+  emitReaction(req.app.get('io'), row, reactions);
+  res.json({ message_id: row.id, reactions });
+};
+
+// DELETE /api/messages/chat/:userId   -> clear the whole chat for me only
+export const clearChat = async (req, res) => {
+  const otherId = parseUserId(req.params.userId);
+  if (otherId === req.user.id) throw new AppError('You cannot message yourself', 400);
+  await ensureUserExists(otherId);
+
+  const cleared = await clearChatService(req.user.id, otherId);
+  emitHidden(req.app.get('io'), req.user.id, { chatUserId: otherId });
+  res.json({ message: 'Chat cleared', cleared });
 };
 
 // PATCH /api/messages/:userId/read   -> I have read everything that :userId sent me
@@ -101,4 +122,32 @@ export const markRead = async (req, res) => {
   if (updated > 0) emitMessagesRead(req.app.get('io'), me, otherId);
 
   res.json({ updated, unread_count: await getUnreadTotal(me) });
+};
+
+// GET /uploads/messages/:file
+// Serves a chat attachment. Images open in the browser, other files download with their ORIGINAL name.
+// The address contains a long random part, so only people who were given it (the two chat members) can open it.
+export const serveMessageFile = async (req, res) => {
+  const file = req.params.file;
+  if (!/^[A-Za-z0-9._-]+$/.test(file)) throw new AppError('File not found', 404);
+
+  const [rows] = await pool.query(
+    'SELECT attachment_name, attachment_type FROM messages WHERE attachment_path = ? LIMIT 1',
+    [`uploads/messages/${file}`]
+  );
+  if (rows.length === 0) throw new AppError('File not found', 404);
+
+  const fullPath = path.join(messageUploads, file);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+
+  const onError = (err) => {
+    if (err && !res.headersSent) res.status(404).json({ success: false, message: 'File not found' });
+  };
+
+  if (rows[0].attachment_type && rows[0].attachment_type.startsWith('image/')) {
+    res.sendFile(fullPath, onError);
+  } else {
+    res.download(fullPath, rows[0].attachment_name || file, onError);
+  }
 };

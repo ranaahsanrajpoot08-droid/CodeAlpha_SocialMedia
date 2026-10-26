@@ -63,8 +63,11 @@ export const unlikePost = (postId) => api.delete(`/posts/${postId}/like`).then((
 
 // ---------- Comments ----------
 export const fetchComments = (postId) => api.get(`/posts/${postId}/comments`).then((r) => r.data);
-export const addComment = (postId, comment) => api.post(`/posts/${postId}/comments`, { comment }).then((r) => r.data);
+export const addComment = (postId, comment, parentId) =>
+  api.post(`/posts/${postId}/comments`, { comment, parentId }).then((r) => r.data);
 export const deleteComment = (id) => api.delete(`/comments/${id}`).then((r) => r.data);
+export const likeComment = (id) => api.post(`/comments/${id}/like`).then((r) => r.data);
+export const unlikeComment = (id) => api.delete(`/comments/${id}/like`).then((r) => r.data);
 
 // ---------- Follows ----------
 export const followUser = (id) => api.post(`/users/${id}/follow`).then((r) => r.data);
@@ -78,5 +81,10 @@ export const fetchUnreadCount = () => api.get('/messages/unread-count').then((r)
 export const fetchMessages = (userId, params) => api.get(`/messages/${userId}`, { params }).then((r) => r.data);
 export const sendMessageRest = (userId, data) => api.post(`/messages/${userId}`, data).then((r) => r.data);
 export const markMessagesRead = (userId) => api.patch(`/messages/${userId}/read`).then((r) => r.data);
+// scope = 'me' (delete for me) or 'everyone' (unsend)
+export const deleteMessage = (id, scope) => api.delete(`/messages/item/${id}`, { params: { scope } }).then((r) => r.data);
+export const reactToMessage = (id, emoji) => api.put(`/messages/item/${id}/reaction`, { emoji }).then((r) => r.data);
+export const forwardMessage = (messageId, userIds) => api.post('/messages/forward', { messageId, userIds }).then((r) => r.data);
+export const clearChat = (userId) => api.delete(`/messages/chat/${userId}`).then((r) => r.data);
 
 export default api;

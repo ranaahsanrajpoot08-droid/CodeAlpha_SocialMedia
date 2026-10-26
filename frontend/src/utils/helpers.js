@@ -38,3 +38,23 @@ export const formatMessageTime = (dateString) => {
   const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   return isSameDay(date, new Date()) ? time : `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}, ${time}`;
 };
+
+// "12 KB", "3.4 MB"
+export const formatFileSize = (bytes) => {
+  if (!bytes && bytes !== 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+// One-line text for the inbox / reply quotes. Works for a message or an inbox "last_message".
+export const messagePreview = (m) => {
+  if (!m) return '';
+  if (m.is_deleted) return '🚫 This message was deleted';
+  const text = m.message_text || '';
+  if (m.attachment) {
+    const label = m.attachment.is_image ? '📷 Photo' : `📎 ${m.attachment.name}`;
+    return text ? `${label} ${text}` : label;
+  }
+  return text;
+};

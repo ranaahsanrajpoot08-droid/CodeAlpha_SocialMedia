@@ -22,7 +22,11 @@ export const errorHandler = (err, req, res, next) => {
 
   if (err instanceof multer.MulterError) {
     status = 400;
-    message = err.code === 'LIMIT_FILE_SIZE' ? 'Image is too large. Maximum size is 5MB.' : err.message;
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      message = err.field === 'attachment' ? 'File is too large. Maximum size is 10MB.' : 'Image is too large. Maximum size is 5MB.';
+    } else {
+      message = err.message;
+    }
   } else if (err.code === 'ER_DUP_ENTRY') {
     status = 409;
     const text = String(err.sqlMessage || '');

@@ -1,5 +1,6 @@
 // SocketContext: ONE Socket.IO connection for the whole app, created after login.
-// It also keeps the total unread-message number shown in the navbar.
+// It also keeps the total unread-message number shown in the navbar
+// and the list of people who are online right now.
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { io } from 'socket.io-client';
 import { SERVER_URL, fetchUnreadCount } from '../services/api.js';
@@ -14,6 +15,7 @@ export const SocketProvider = ({ children }) => {
   const [socket, setSocket] = useState(null);
   const [connected, setConnected] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [onlineIds, setOnlineIds] = useState(() => new Set());
 
   const refreshUnread = useCallback(() => {
     fetchUnreadCount()
@@ -27,6 +29,7 @@ export const SocketProvider = ({ children }) => {
       setSocket(null);
       setConnected(false);
       setUnreadCount(0);
+      setOnlineIds(new Set());
       return;
     }
 
@@ -42,15 +45,29 @@ export const SocketProvider = ({ children }) => {
       setConnected(true);
       refreshUnread(); // catch up on anything received while we were offline
     });
-    s.on('disconnect', () => setConnected(false));
+    s.on('disconnect', () => {
+      setConnected(false);
+      setOnlineIds(new Set()); // we cannot know who is online while disconnected
+    });
     s.on('connect_error', () => setConnected(false));
 
     // A new message for me -> update the navbar badge.
     s.on('message:new', (message) => {
       if (message.receiver_id === userId) refreshUnread();
     });
-    // I read messages (maybe in another tab) -> update the badge.
+    // I read / deleted messages (maybe in another tab) or the sender unsent one -> update the badge.
     s.on('unread:changed', refreshUnread);
+
+    // Online status: the full list when we connect, then one update per change.
+    s.on('presence:list', ({ online }) => setOnlineIds(new Set(online)));
+    s.on('presence', ({ userId: id, online }) => {
+      setOnlineIds((prev) => {
+        const next = new Set(prev);
+        if (online) next.add(id);
+        else next.delete(id);
+        return next;
+      });
+    });
 
     setSocket(s);
     refreshUnread();
@@ -62,7 +79,7 @@ export const SocketProvider = ({ children }) => {
   }, [userId, refreshUnread]);
 
   return (
-    <SocketContext.Provider value={{ socket, connected, unreadCount, setUnreadCount, refreshUnread }}>
+    <SocketContext.Provider value={{ socket, connected, unreadCount, setUnreadCount, refreshUnread, onlineIds }}>
       {children}
     </SocketContext.Provider>
   );
